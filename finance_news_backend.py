@@ -3,7 +3,7 @@
 """
 FinanceFlow - Production Ready for Render.com with Firebase Firestore
 - Uses .env for local development via python-dotenv
-- Uses environment variables on Render (via Secret File for Firebase key)
+- Correctly initializes Firebase on Render by reading the Secret File from its path
 - Uses Firestore for persistent, free database caching
 - Uses Gunicorn as the production WSGI server
 """
@@ -23,7 +23,7 @@ from flask_cors import CORS
 import logging
 from dotenv import load_dotenv
 
-# NEW: Firebase Admin SDK for database
+# Firebase Admin SDK for database
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -36,24 +36,36 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Firebase Initialization ---
-# This block attempts to initialize the connection to your Firestore database.
+# --- Firebase Initialization (Robust version for Render Secret Files) ---
 try:
-    # On Render, the GOOGLE_APPLICATION_CREDENTIALS environment variable is automatically
-    # set when you add a Secret File named 'google-credentials.json'.
-    # For local development, this variable should be in your .env file,
-    # pointing to the path of your downloaded key file.
-    cred = credentials.ApplicationDefault()
-    firebase_admin.initialize_app(cred, {
-        'projectId': os.getenv('FIREBASE_PROJECT_ID'), # Optional: Helps SDK find the project
-    })
+    # Define the path for the credentials file.
+    # On Render, the Secret File is placed in the root directory of the application.
+    key_path = "google-credentials.json"
+
+    # Check if the credentials file exists at the expected path.
+    if os.path.exists(key_path):
+        # This block will run on Render
+        logger.info(f"Found credentials file at: {key_path}. Initializing Firebase from file.")
+        # Initialize using the service account file path directly.
+        cred = credentials.Certificate(key_path)
+    else:
+        # This block will run on local development (or if the file is missing on Render)
+        logger.info(f"'{key_path}' not found. Falling back to GOOGLE_APPLICATION_CREDENTIALS env var.")
+        # This relies on the GOOGLE_APPLICATION_CREDENTIALS environment variable
+        # set in the .env file for local development.
+        cred = credentials.ApplicationDefault()
+
+    # Initialize the Firebase app with the determined credentials
+    firebase_admin.initialize_app(cred)
     logger.info("Firebase initialized successfully.")
+    
     # Get a client to the Firestore service
     db_firestore = firestore.client()
     # Create a reference to the collection we'll use for caching summaries
     summaries_collection = db_firestore.collection('summaries')
+
 except Exception as e:
-    logger.error(f"FATAL: Failed to initialize Firebase: {e}. Caching will be disabled.")
+    logger.error(f"FATAL: Failed to initialize Firebase: {e}. Caching will be disabled.", exc_info=True)
     summaries_collection = None
 
 
@@ -84,12 +96,9 @@ class FirestoreManager:
     """A manager class to abstract Firestore operations."""
     
     def find_summary_by_article_id(self, article_id: str) -> Optional[Summary]:
-        """Fetches a summary from the Firestore 'summaries' collection."""
-        if not summaries_collection:
-            return None # Firebase was not initialized
+        if not summaries_collection: return None
         try:
-            doc_ref = summaries_collection.document(article_id)
-            doc = doc_ref.get()
+            doc = summaries_collection.document(article_id).get()
             if doc.exists:
                 logger.info(f"Cache hit in Firestore for article ID {article_id}.")
                 return Summary(**doc.to_dict())
@@ -99,13 +108,9 @@ class FirestoreManager:
             return None
 
     def save_summary(self, summary: Summary):
-        """Saves a summary dataclass to Firestore, using its article_id as the document ID."""
-        if not summaries_collection:
-            return # Firebase was not initialized
+        if not summaries_collection: return
         try:
-            doc_ref = summaries_collection.document(summary.article_id)
-            # Use asdict to convert the dataclass to a dictionary, which Firestore can store.
-            doc_ref.set(asdict(summary))
+            summaries_collection.document(summary.article_id).set(asdict(summary))
             logger.info(f"Saved summary for article ID {summary.article_id} to Firestore.")
         except Exception as e:
             logger.error(f"Error saving document for article ID {summary.article_id} to Firestore: {e}")
@@ -114,7 +119,6 @@ class FirestoreManager:
 # --- NewsAggregator (Fetches news, currently using mock data) ---
 class NewsAggregator:
     def fetch_financial_news(self, limit: int = 3) -> List[NewsArticle]:
-        """In a real app, this would call a News API. Here, we use mock data."""
         mock_articles_data = [
             {"id": "fed-rates-decision-2024", "title": "Federal Reserve Announces Interest Rate Decision", "content": "The Federal Reserve announced today that it will maintain current interest rates at 5.25-5.5% range, citing ongoing concerns about inflation and employment data. The decision comes after weeks of speculation about potential rate cuts. Fed Chair Jerome Powell emphasized the committee's commitment to bringing inflation down to the 2% target while maintaining a strong labor market. Economic indicators show mixed signals, with unemployment at 3.7% and core inflation at 3.2%. The decision affects mortgage rates, business lending, and overall economic growth.", "url": "https://example.com/fed-rates", "published_at": datetime.now() - timedelta(hours=2), "source": "Financial Times", "category": "monetary_policy"},
             {"id": "tesla-q4-earnings-2024", "title": "Tesla Stock Surges 15% on Q4 Earnings Beat", "content": "Tesla Inc. shares jumped 15% in after-hours trading following the company's stronger-than-expected Q4 earnings report. The electric vehicle maker reported earnings per share of $0.71, beating analyst estimates of $0.63. Revenue reached $25.2 billion, up 3% year-over-year. CEO Elon Musk highlighted improved production efficiency and strong demand in China and Europe. The company delivered 484,507 vehicles in Q4.", "url": "https://example.com/tesla-earnings", "published_at": datetime.now() - timedelta(hours=1), "source": "Reuters", "category": "earnings"},
@@ -229,22 +233,17 @@ except FileNotFoundError:
 # --- API Routes ---
 @app.route('/')
 def index():
-    """Serves the main single-page application."""
     return render_template_string(FRONTEND_HTML)
 
 @app.route('/api/news')
 def get_news():
-    """Provides summarized news, using Firestore as a cache."""
     try:
         level = request.args.get('level', 'beginner')
         articles = news_fetcher.fetch_financial_news()
         response_data = []
         
         for article in articles:
-            # Check Firestore for a cached summary first
             summary = firestore_manager.find_summary_by_article_id(article.id)
-            
-            # If not in cache, generate a new one and save it
             if not summary:
                 logger.info(f"Cache miss for article ID {article.id}. Calling Groq API.")
                 summary = ai_processor.generate_summary(article, level)
@@ -261,8 +260,6 @@ def get_news():
 
 @app.route('/api/daily-brief')
 def get_daily_brief():
-    """Provides a daily market brief."""
-    # Caching for this can be added later if needed (e.g., cache one brief per day)
     try:
         assets_str = request.args.get('assets', 'tesla,bitcoin')
         user_assets = assets_str.split(',') if assets_str else []
@@ -277,5 +274,4 @@ def get_daily_brief():
 # Gunicorn, the production server on Render, will not run this.
 if __name__ == '__main__':
     print("🚀 Starting FinanceFlow [LOCAL DEVELOPMENT MODE WITH FIREBASE]")
-    # debug=True enables auto-reloading when you change the code.
     app.run(debug=True, host='0.0.0.0', port=5000)
