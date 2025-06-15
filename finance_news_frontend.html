@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FinanceFlow - Financial News Made Simple</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; overflow-x: hidden; }
+        .app-container { max-width: 400px; margin: 0 auto; min-height: 100vh; background: rgba(0,0,0,0.1); position: relative; }
+        .header { position: fixed; top: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 400px; background: rgba(0,0,0,0.9); backdrop-filter: blur(10px); padding: 15px 20px; z-index: 100; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .header h1 { font-size: 24px; font-weight: 700; background: linear-gradient(45deg, #ff6b6b, #feca57); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; text-align: center; }
+        .nav-tabs { display: flex; justify-content: space-around; margin-top: 10px; }
+        .tab { padding: 8px 16px; border-radius: 20px; background: transparent; border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer; transition: all 0.3s ease; font-size: 12px; }
+        .tab.active { background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.5); }
+        .content { margin-top: 120px; padding-bottom: 100px; }
+        .story-card { margin: 20px; background: rgba(255,255,255,0.95); border-radius: 20px; color: #333; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.1); animation: slideIn 0.5s ease-out; position: relative; }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+        .card-header { padding: 20px; background: linear-gradient(135deg, #667eea, #764ba2); color: white; position: relative; }
+        .source-badge { display: inline-block; background: rgba(255,255,255,0.2); padding: 4px 12px; border-radius: 15px; font-size: 12px; margin-bottom: 10px; }
+        .story-title { font-size: 18px; font-weight: 700; line-height: 1.3; margin-bottom: 10px; }
+        .reading-time { font-size: 12px; opacity: 0.8; }
+        .card-content { padding: 20px; }
+        .summary-section { margin-bottom: 20px; }
+        .section-title { font-size: 14px; font-weight: 600; color: #667eea; margin-bottom: 8px; display: flex; align-items: center; }
+        .emoji { margin-right: 8px; font-size: 16px; }
+        .simple-summary { font-size: 16px; line-height: 1.5; color: #2c3e50; margin-bottom: 15px; }
+        .key-points { list-style: none; }
+        .key-points li { padding: 8px 12px; margin: 6px 0; background: #f8f9fa; border-radius: 10px; border-left: 3px solid #667eea; font-size: 14px; }
+        .impact-box { background: linear-gradient(135deg, #ff9a9e, #fecfef); padding: 15px; border-radius: 15px; margin: 15px 0; }
+        .impact-box .section-title { color: #fff; }
+        .impact-text { color: #fff; font-size: 14px; line-height: 1.4; }
+        .investment-tips { background: #e8f5e8; padding: 15px; border-radius: 15px; border-left: 4px solid #28a745; }
+        .investment-tips .section-title { color: #28a745; }
+        .swipe-indicator { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.7); padding: 10px 20px; border-radius: 25px; font-size: 12px; animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+        .daily-brief { margin: 20px; background: rgba(255,255,255,0.95); border-radius: 20px; color: #333; padding: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
+        .brief-header { text-align: center; margin-bottom: 20px; }
+        .brief-date { font-size: 24px; font-weight: 700; background: linear-gradient(45deg, #667eea, #764ba2); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        .market-overview { background: #f0f2ff; padding: 15px; border-radius: 15px; margin: 15px 0; border-left: 4px solid #667eea; }
+        .themes-list { list-style: none; margin: 15px 0; }
+        .themes-list li { padding: 10px; margin: 8px 0; background: linear-gradient(135deg, #ffeaa7, #fab1a0); border-radius: 12px; color: #2d3436; font-weight: 500; }
+        .loading { text-align: center; padding: 40px; font-size: 18px; }
+        .spinner { border: 3px solid rgba(255,255,255,0.3); border-top: 3px solid white; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 0 auto 15px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .preferences-panel { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 200; display: none; justify-content: center; align-items: center; }
+        .preferences-content { background: white; padding: 30px; border-radius: 20px; max-width: 350px; color: #333; position: relative; }
+        .close-btn { position: absolute; top: 10px; right: 15px; background: none; border: none; font-size: 24px; cursor: pointer; color: #aaa; }
+        .difficulty-indicator { display: inline-block; padding: 4px 8px; border-radius: 8px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+        .difficulty-beginner { background: #d4edda; color: #155724; }
+        .difficulty-intermediate { background: #fff3cd; color: #856404; }
+        .difficulty-advanced { background: #f8d7da; color: #721c24; }
+        .pref-section { margin: 20px 0; }
+        .pref-section label { font-weight: 600; display: block; margin-bottom: 10px; }
+        .pref-options label { font-weight: normal; display: inline-block; margin-right: 15px; }
+        .pref-input { width: 100%; padding: 8px; border-radius: 5px; border: 1px solid #ccc; margin-top: 5px; }
+        .save-btn { display: block; width: 100%; padding: 12px; background: linear-gradient(135deg, #667eea, #764ba2); color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 20px; }
+        @media (max-width: 480px) { .app-container, .header { max-width: 100%; } }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <div class="header">
+            <h1>FinanceFlow</h1>
+            <div class="nav-tabs">
+                <button id="tab-news" class="tab active" onclick="showTab('news')">📈 News</button>
+                <button id="tab-brief" class="tab" onclick="showTab('brief')">📊 Brief</button>
+                <button id="tab-settings" class="tab" onclick="showPreferences()">⚙️ Settings</button>
+            </div>
+        </div>
+
+        <div class="content">
+            <div id="news-content">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    Loading your personalized financial news...
+                </div>
+            </div>
+
+            <div id="brief-content" style="display: none;">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    Generating your daily market brief...
+                </div>
+            </div>
+        </div>
+
+        <div class="swipe-indicator">
+            👆 Swipe up for more stories
+        </div>
+    </div>
+
+    <div class="preferences-panel" id="preferences">
+        <div class="preferences-content">
+            <button class="close-btn" onclick="hidePreferences()">×</button>
+            <h3>Customize Your Feed</h3>
+            <p>Select your interests and experience level to get personalized content.</p>
+            
+            <div class="pref-section">
+                <label>Experience Level:</label>
+                <div class="pref-options">
+                    <label><input type="radio" name="level" value="beginner" checked> Beginner</label>
+                    <label><input type="radio" name="level" value="intermediate"> Intermediate</label>
+                    <label><input type="radio" name="level" value="advanced"> Advanced</label>
+                </div>
+            </div>
+
+            <div class="pref-section">
+                <label for="assets-input">Interested Assets (e.g., Tesla, Bitcoin, AAPL):</label>
+                <input type="text" id="assets-input" class="pref-input" placeholder="tesla,bitcoin,aapl">
+            </div>
+
+            <button class="save-btn" onclick="savePreferences()">Save and Refresh</button>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = ''; // Empty for same-origin requests
+        let briefLoaded = false;
+        
+        // --- On Page Load ---
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchNews();
+        });
+
+        // --- Tab Management ---
+        function showTab(tabName) {
+            document.getElementById('news-content').style.display = 'none';
+            document.getElementById('brief-content').style.display = 'none';
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+
+            document.getElementById(`${tabName}-content`).style.display = 'block';
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+
+            if (tabName === 'brief' && !briefLoaded) {
+                fetchBrief();
+            }
+        }
+
+        // --- Data Fetching ---
+        async function fetchNews() {
+            const newsContent = document.getElementById('news-content');
+            newsContent.innerHTML = `<div class="loading"><div class="spinner"></div>Loading your personalized financial news...</div>`;
+            
+            try {
+                const level = document.querySelector('input[name="level"]:checked').value || 'beginner';
+                const response = await fetch(`${API_BASE_URL}/api/news?level=${level}`);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const result = await response.json();
+
+                newsContent.innerHTML = ''; // Clear loading
+                result.data.forEach(item => {
+                    newsContent.innerHTML += renderStoryCard(item);
+                });
+            } catch (error) {
+                console.error("Failed to fetch news:", error);
+                newsContent.innerHTML = `<div class="loading">Sorry, we couldn't load the news. Please try again later.</div>`;
+            }
+        }
+
+        async function fetchBrief() {
+            const briefContent = document.getElementById('brief-content');
+            const assets = localStorage.getItem('userAssets') || 'tesla,bitcoin';
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/daily-brief?assets=${assets}`);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const result = await response.json();
+
+                briefContent.innerHTML = renderBrief(result.data);
+                briefLoaded = true;
+            } catch (error) {
+                console.error("Failed to fetch brief:", error);
+                briefContent.innerHTML = `<div class="loading">Sorry, we couldn't generate the brief. Please try again later.</div>`;
+            }
+        }
+
+        // --- UI Rendering ---
+        function renderStoryCard(data) {
+            const { article, summary } = data;
+            
+            const keyPointsHtml = summary.key_points.map(point => `<li>${point}</li>`).join('');
+
+            const difficultyClass = `difficulty-${summary.difficulty_level.toLowerCase()}`;
+            
+            return `
+            <div class="story-card">
+                <div class="card-header">
+                    <span class="source-badge">${article.source}</span>
+                    <h2 class="story-title">${article.title}</h2>
+                    <span class="reading-time">☕️ ${summary.reading_time_minutes} min read</span>
+                    <span class="difficulty-indicator ${difficultyClass}">${summary.difficulty_level}</span>
+                </div>
+                <div class="card-content">
+                    <div class="summary-section">
+                        <h3 class="section-title"><span class="emoji">💡</span>The Simple Version</h3>
+                        <p class="simple-summary">${summary.simple_summary}</p>
+                    </div>
+                    <div class="summary-section">
+                        <h3 class="section-title"><span class="emoji">🔑</span>Key Points</h3>
+                        <ul class="key-points">${keyPointsHtml}</ul>
+                    </div>
+                    <div class="impact-box">
+                        <h3 class="section-title"><span class="emoji">💥</span>Potential Impact</h3>
+                        <p class="impact-text">${summary.impact_analysis}</p>
+                    </div>
+                    <div class="investment-tips">
+                        <h3 class="section-title"><span class="emoji">💰</span>Investor's Corner</h3>
+                        <p>${summary.investment_implications}</p>
+                    </div>
+                </div>
+            </div>
+            `;
+        }
+
+        function renderBrief(data) {
+            const themesHtml = data.key_themes.map(theme => `<li>${theme}</li>`).join('');
+            
+            return `
+            <div class="daily-brief">
+                <div class="brief-header">
+                    <div class="brief-date">${data.date}</div>
+                    <p>Your Daily Market Snapshot</p>
+                </div>
+                <div class="market-overview">
+                    <h3 class="section-title"><span class="emoji">🌍</span> Market Overview</h3>
+                    <p>${data.market_overview}</p>
+                </div>
+                <div>
+                    <h3 class="section-title"><span class="emoji">🔥</span> Today's Key Themes</h3>
+                    <ul class="themes-list">${themesHtml}</ul>
+                </div>
+            </div>
+            `;
+        }
+
+        // --- Preferences Panel ---
+        function showPreferences() {
+            document.getElementById('assets-input').value = localStorage.getItem('userAssets') || 'tesla,bitcoin';
+            document.getElementById('preferences').style.display = 'flex';
+        }
+
+        function hidePreferences() {
+            document.getElementById('preferences').style.display = 'none';
+        }
+
+        async function savePreferences() {
+            const level = document.querySelector('input[name="level"]:checked').value;
+            const assets = document.getElementById('assets-input').value;
+            
+            // Save to local storage for persistence across sessions
+            localStorage.setItem('userAssets', assets);
+            
+            // In a real app with user accounts, you would POST this to the server
+            // For now, we just use it to refetch data.
+            console.log("Preferences saved:", { level, assets });
+
+            hidePreferences();
+            
+            // Refresh content with new preferences
+            briefLoaded = false; // Force brief to reload with new assets
+            if (document.getElementById('tab-news').classList.contains('active')) {
+                fetchNews();
+            } else if (document.getElementById('tab-brief').classList.contains('active')) {
+                fetchBrief();
+            }
+        }
+    </script>
+</body>
+</html>
