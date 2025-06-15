@@ -1,3 +1,4 @@
+# requirements.txt
 Flask==3.0.3
 Flask-Cors==4.0.1
 requests==2.32.3
@@ -7,6 +8,4 @@ gunicorn==22.0.0
 firebase-admin==6.5.0
 httpx==0.27.0
 yfinance==0.2.40
-feedparser==6.0.11  # <--- สำหรับอ่าน RSS
-beautifulsoup4==4.12.3 # <--- ยังคงใช้สำหรับดึงเนื้อหาข่าว
-lxml==5.2.2
+feedparser==6.0.11
