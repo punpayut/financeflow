@@ -1,17 +1,19 @@
 /* static/css/style.css */
 
-/* --- Core & Body Styles --- */
+/* --- CSS Variables for easy theme management --- */
 :root {
     --positive-color: #2ecc71;
     --negative-color: #e74c3c;
     --neutral-color: #95a5a6;
     --background-color: #121212;
     --card-background: #1e1e1e;
-    --text-primary: #ffffff;
+    --text-primary: #e0e0e0;
     --text-secondary: #b3b3b3;
     --accent-color: #bb86fc;
+    --border-color: #333333;
 }
 
+/* --- Core & Body Styles --- */
 * {
     margin: 0;
     padding: 0;
@@ -20,7 +22,7 @@
 
 html, body {
     height: 100%;
-    overflow: hidden;
+    overflow: hidden; /* Critical for single-page scroll layout */
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--background-color);
     color: var(--text-primary);
@@ -32,67 +34,95 @@ html, body {
     top: 0;
     left: 0;
     width: 100%;
-    background: rgba(0, 0, 0, 0.8);
+    background: rgba(18, 18, 18, 0.85);
     backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     z-index: 1000;
     padding: 8px 0;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border-color);
     white-space: nowrap;
-    overflow-x: hidden;
+    overflow: hidden;
 }
+
 .stock-ticker-inner {
     display: inline-block;
-    animation: ticker-scroll 45s linear infinite;
+    animation: ticker-scroll 60s linear infinite;
 }
+
 .stock-box {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
     padding: 0 20px;
     font-size: 14px;
+    color: var(--text-secondary);
 }
+
 .stock-box .symbol {
     font-weight: bold;
+    color: var(--text-primary);
 }
+
 .stock-box .price {
     margin-left: 8px;
+    color: var(--text-primary);
 }
+
 .stock-box .change {
     margin-left: 8px;
     font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 5px;
+    font-size: 12px;
 }
-.positive { color: var(--positive-color); }
-.negative { color: var(--negative-color); }
+
+.positive {
+    background-color: rgba(46, 204, 113, 0.15);
+    color: var(--positive-color);
+}
+
+.negative {
+    background-color: rgba(231, 76, 60, 0.15);
+    color: var(--negative-color);
+}
 
 @keyframes ticker-scroll {
-    0% { transform: translateX(0%); }
-    100% { transform: translateX(-50%); }
+    0% {
+        transform: translateX(0%);
+    }
+    100% {
+        transform: translateX(-50%); /* Scrolls exactly one copy of the content */
+    }
 }
 
 
 /* --- Main App Container (News Feed) --- */
 .app-container {
     height: 100vh;
-    padding-top: 50px; /* Space for stock bar */
-    padding-bottom: 100px; /* Space for Q&A footer */
+    padding-top: 50px; /* Space for the fixed stock bar */
+    padding-bottom: 100px; /* Space for the fixed Q&A footer */
     overflow-y: scroll;
     scroll-snap-type: y mandatory;
     -webkit-overflow-scrolling: touch;
 }
 
+/* --- Individual News Card --- */
 .story-card {
-    height: calc(100vh - 150px); /* Adjust height to fit screen */
+    height: calc(100vh - 150px); /* Adjust height to fit screen between header and footer */
     margin: 20px;
-    scroll-snap-align: center; /* Snap to the center of the card */
+    scroll-snap-align: center;
     background: var(--card-background);
     border-radius: 20px;
-    border: 1px solid #333;
+    border: 1px solid var(--border-color);
     padding: 20px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    transition: transform 0.3s ease;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
+
 .story-card:hover {
     transform: translateY(-5px);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
 }
 
 .card-header {
@@ -102,22 +132,40 @@ html, body {
     margin-bottom: 15px;
     font-size: 12px;
     color: var(--text-secondary);
+    flex-shrink: 0; /* Prevent header from shrinking */
 }
-.card-source { font-weight: bold; }
+
+.card-source {
+    font-weight: bold;
+}
 
 .card-title {
     font-size: 18px;
     font-weight: 600;
     margin-bottom: 15px;
     line-height: 1.4;
+    color: var(--text-primary);
 }
 
 .card-summary {
     font-size: 15px;
     line-height: 1.6;
     color: var(--text-secondary);
-    flex-grow: 1;
-    overflow-y: auto;
+    flex-grow: 1; /* Allow summary to take up available space */
+    overflow-y: auto; /* Add scroll if summary is too long */
+    padding-right: 10px; /* For scrollbar spacing */
+}
+
+/* Custom scrollbar for summary */
+.card-summary::-webkit-scrollbar {
+    width: 5px;
+}
+.card-summary::-webkit-scrollbar-track {
+    background: transparent;
+}
+.card-summary::-webkit-scrollbar-thumb {
+    background-color: #555;
+    border-radius: 10px;
 }
 
 .card-footer {
@@ -126,11 +174,14 @@ html, body {
     justify-content: space-between;
     align-items: center;
     font-size: 14px;
+    flex-shrink: 0; /* Prevent footer from shrinking */
 }
+
 .sentiment-badge {
     padding: 5px 10px;
     border-radius: 15px;
     font-weight: bold;
+    font-size: 12px;
 }
 .sentiment-Positive { background-color: var(--positive-color); color: #000; }
 .sentiment-Negative { background-color: var(--negative-color); color: #fff; }
@@ -140,6 +191,10 @@ html, body {
     font-weight: 600;
     color: var(--accent-color);
     text-decoration: none;
+    transition: opacity 0.2s;
+}
+.source-link:hover {
+    opacity: 0.8;
 }
 
 
@@ -149,15 +204,18 @@ html, body {
     bottom: 0;
     left: 0;
     width: 100%;
-    background: rgba(0, 0, 0, 0.8);
+    background: rgba(18, 18, 18, 0.85);
     backdrop-filter: blur(10px);
-    border-top: 1px solid #333;
+    -webkit-backdrop-filter: blur(10px);
+    border-top: 1px solid var(--border-color);
     padding: 15px 20px;
     z-index: 1000;
 }
+
 .qa-input-wrapper {
     display: flex;
 }
+
 #qa-input {
     flex-grow: 1;
     background: #333;
@@ -167,7 +225,12 @@ html, body {
     color: var(--text-primary);
     font-size: 14px;
     margin-right: 10px;
+    outline: none;
 }
+#qa-input:focus {
+    border-color: var(--accent-color);
+}
+
 #qa-button {
     background: var(--accent-color);
     border: none;
@@ -176,12 +239,22 @@ html, body {
     border-radius: 20px;
     padding: 10px 20px;
     cursor: pointer;
+    transition: background-color 0.2s;
 }
+#qa-button:hover {
+    background-color: #a96ef5;
+}
+#qa-button:disabled {
+    background-color: #555;
+    cursor: not-allowed;
+}
+
 .qa-answer {
     margin-top: 10px;
     font-size: 14px;
     color: var(--text-secondary);
     min-height: 20px;
+    line-height: 1.5;
 }
 
 
@@ -193,7 +266,9 @@ html, body {
     align-items: center;
     height: 100%;
     text-align: center;
+    padding: 20px;
 }
+
 .spinner {
     border: 4px solid rgba(255, 255, 255, 0.2);
     border-top: 4px solid var(--accent-color);
@@ -203,4 +278,5 @@ html, body {
     animation: spin 1s linear infinite;
     margin-bottom: 20px;
 }
+
 @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
