@@ -1,7 +1,8 @@
-# finance_news_backend.py (AI Investment Assistant - RSS Only Version)
+# finance_news_backend.py (AI Investment Assistant - Firestore ID Fix Version)
 
 """
-FinanceFlow - AI Investment Assistant (RSS Only)
+FinanceFlow - AI Investment Assistant (Production Ready)
+- Fixes Firestore InvalidArgument error by encoding URLs to safe Document IDs.
 - Serves a modern frontend from /templates and /static folders.
 - Aggregates news from multiple RSS feeds without web scraping.
 - Fetches real-time stock data.
@@ -12,10 +13,11 @@ FinanceFlow - AI Investment Assistant (RSS Only)
 # --- Imports ---
 import os
 import json
+import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
-import re
+import base64  # <-- Import for encoding URLs
 
 import feedparser
 import yfinance as yf
@@ -70,20 +72,23 @@ class NewsItem:
     content: str = ""
     analysis: Optional[Dict[str, Any]] = None
 
-# --- Utility Function ---
-def clean_html(raw_html):
+# --- Utility Functions ---
+def clean_html(raw_html: str) -> str:
     """A simple function to remove HTML tags from a string."""
     if not raw_html: return ""
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
     return cleantext
 
+def url_to_firestore_id(url: str) -> str:
+    """Encodes a URL into a Firestore-safe string using URL-safe Base64."""
+    return base64.urlsafe_b64encode(url.encode('utf-8')).decode('utf-8')
+
 # --- Service Classes ---
 
 class MarketDataProvider:
     """Fetches live stock market data."""
     def get_stock_data(self, symbols: List[str]) -> Dict[str, StockData]:
-        # ... (This class remains unchanged) ...
         if not symbols: return {}
         data = {}
         logger.info(f"Fetching stock data for: {symbols}")
@@ -104,21 +109,22 @@ class NewsAggregator:
         logger.info(f"Fetching from {source_name}")
         feed = feedparser.parse(url)
         items = []
-        for entry in feed.entries[:10]: # Get latest 10 from each source
+        for entry in feed.entries[:10]:
             try:
-                # The 'content' for the AI will be the RSS 'summary' or 'description' field
                 rss_summary = entry.get('summary', entry.get('description', ''))
                 cleaned_content = clean_html(rss_summary)
-
                 published_dt = datetime(*entry.published_parsed[:6]) if hasattr(entry, 'published_parsed') else datetime.now()
                 
+                # Encode the URL to create a safe Document ID for Firestore
+                safe_id = url_to_firestore_id(entry.link)
+                
                 items.append(NewsItem(
-                    id=entry.link,
+                    id=safe_id,             # Use the safe, encoded ID
                     title=entry.title,
-                    link=entry.link,
+                    link=entry.link,          # The original link is still stored for user access
                     source=source_name,
                     published=published_dt,
-                    content=cleaned_content[:1500] # Limit content size
+                    content=cleaned_content[:1500]
                 ))
             except Exception as e:
                 logger.warning(f"Could not parse entry from {source_name}: {e}")
@@ -131,6 +137,7 @@ class NewsAggregator:
             for future in future_to_feed:
                 all_items.extend(future.result())
 
+        # De-duplicate using the safe ID
         unique_items = {item.id: item for item in all_items if item.content}
         sorted_items = sorted(unique_items.values(), key=lambda x: x.published, reverse=True)
         
@@ -139,7 +146,6 @@ class NewsAggregator:
 
 class AIProcessor:
     """Handles all interactions with the Groq LLM for advanced analysis."""
-    # --- The __init__ method is unchanged ---
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY")
         self.client = Groq(api_key=self.api_key) if self.api_key else None
@@ -147,7 +153,6 @@ class AIProcessor:
         self.model = "llama3-8b-8192"
 
     def analyze_news_item(self, news_item: NewsItem) -> Optional[Dict[str, Any]]:
-        # The prompt is now slightly adjusted as 'Content' is a summary, not the full article
         if not self.client or not news_item.content: return None
         prompt = f"""You are a top-tier financial analyst AI. Analyze the provided news summary from an RSS feed.
 
@@ -172,10 +177,19 @@ class AIProcessor:
             return None
 
     def answer_user_question(self, question: str, news_context: List[NewsItem]) -> str:
-        # --- This method is unchanged ---
         if not self.client: return "AI processor is offline."
         context_str = "\n\n".join([f"Title: {item.title}\nSummary: {item.analysis['summary_en']}" for item in news_context if item.analysis])
-        prompt = f"""You are a helpful AI investment assistant...""" # Full prompt is the same
+        prompt = f"""You are a helpful AI investment assistant. Answer the user's question in Thai based *only* on the provided context. Do not give direct financial advice. If the context is insufficient, state that.
+
+        CONTEXT:
+        ---
+        {context_str}
+        ---
+        
+        USER QUESTION: "{question}"
+
+        YOUR ANSWER (in Thai):
+        """
         try:
             chat_completion = self.client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model=self.model, temperature=0.5)
             return chat_completion.choices[0].message.content
@@ -183,15 +197,12 @@ class AIProcessor:
             logger.error(f"Groq Q&A failed: {e}")
             return "ขออภัยค่ะ เกิดข้อผิดพลาดในการประมวลผลคำตอบ"
 
-
 # --- Application Components ---
 news_aggregator = NewsAggregator()
 market_provider = MarketDataProvider()
 ai_processor = AIProcessor()
 
-# --- Flask App & API Endpoints ---
-# The logic for the Flask app, caching, and API endpoints is completely unchanged.
-# It's robust enough to handle this new data source without modification.
+# --- Flask App & Caching Logic ---
 app = Flask(__name__, template_folder='templates', static_folder='static')
 CORS(app)
 
@@ -199,7 +210,6 @@ news_cache: List[NewsItem] = []
 cache_expiry = datetime.now()
 
 def get_analyzed_news() -> List[NewsItem]:
-    # ... (This function is unchanged) ...
     global news_cache, cache_expiry
     if not news_cache or datetime.now() > cache_expiry:
         logger.info("News cache expired. Fetching and analyzing...")
@@ -208,9 +218,11 @@ def get_analyzed_news() -> List[NewsItem]:
         items_to_analyze = []
         if analyzed_news_collection:
             for item in fresh_news:
+                # The item.id is already a safe, encoded string here
                 cached_doc = analyzed_news_collection.document(item.id).get()
                 if cached_doc.exists:
                     item.analysis = cached_doc.to_dict()
+                    logger.info(f"Firestore cache hit for {item.link}")
                 else:
                     items_to_analyze.append(item)
         else:
@@ -232,6 +244,7 @@ def get_analyzed_news() -> List[NewsItem]:
     
     return news_cache
 
+# --- API Endpoints ---
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -241,9 +254,12 @@ def get_main_feed():
     try:
         analyzed_news = get_analyzed_news()
         all_symbols = set(sym for item in analyzed_news for sym in item.analysis.get('affected_symbols', []))
-        stock_data = market_provider.get_stock_data(list(all_symbols)[:10])
+        stock_data = market_provider.get_stock_data(list(all_symbols)[:10]) # Limit symbols for performance
         
-        response_data = {"news": [asdict(item) for item in analyzed_news], "stocks": {symbol: asdict(data) for symbol, data in stock_data.items()}}
+        response_data = {
+            "news": [asdict(item) for item in analyzed_news],
+            "stocks": {symbol: asdict(data) for symbol, data in stock_data.items()}
+        }
         return jsonify({"status": "success", "data": response_data})
     except Exception as e:
         logger.error(f"Error in main_feed endpoint: {e}", exc_info=True)
@@ -253,7 +269,8 @@ def get_main_feed():
 def ask_question():
     data = request.get_json()
     question = data.get('question')
-    if not question: return jsonify({"status": "error", "message": "No question provided."}), 400
+    if not question:
+        return jsonify({"status": "error", "message": "No question provided."}), 400
     news_context = news_cache
     answer = ai_processor.answer_user_question(question, news_context)
     return jsonify({"status": "success", "answer": answer})
