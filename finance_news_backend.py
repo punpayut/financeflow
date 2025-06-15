@@ -1,24 +1,30 @@
 # finance_news_backend.py
 
 """
-FinanceFlow - Production Ready for Render.com with Firebase Firestore
-- Uses .env for local development via python-dotenv
-- Correctly initializes Firebase on Render by reading the Secret File from its path
-- Uses Firestore for persistent, free database caching
-- Uses Gunicorn as the production WSGI server
+FinanceFlow - AI Investment Assistant (Production Ready)
+- Serves a modern frontend from /templates and /static folders.
+- Aggregates news from multiple RSS feeds.
+- Fetches real-time stock data.
+- Uses AI for comprehensive news analysis, translation, and Q&A.
+- Caches analyzed news in Firestore to save costs and improve speed.
 """
 
 # --- Standard Library Imports ---
 import os
 import json
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
+from concurrent.futures import ThreadPoolExecutor
 
 # --- Third-party Imports ---
+import feedparser
+import yfinance as yf
 import requests
+from bs4 import BeautifulSoup
 from dataclasses import dataclass, asdict
+
 from groq import Groq
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template  # Use render_template
 from flask_cors import CORS
 import logging
 from dotenv import load_dotenv
@@ -27,251 +33,261 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# --- Load .env and Initialize Services ---
-# This line loads variables from the .env file into the environment.
-# It's crucial for local development.
+# --- Initialization ---
 load_dotenv()
-
-# Configure logging to see output in Render's logs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Firebase Initialization (Robust version for Render Secret Files) ---
+# Initialize Firebase
 try:
-    # Define the path for the credentials file.
-    # On Render, the Secret File is placed in the root directory of the application.
     key_path = "google-credentials.json"
-
-    # Check if the credentials file exists at the expected path.
     if os.path.exists(key_path):
-        # This block will run on Render
-        logger.info(f"Found credentials file at: {key_path}. Initializing Firebase from file.")
-        # Initialize using the service account file path directly.
         cred = credentials.Certificate(key_path)
+        logger.info(f"Initializing Firebase from file: {key_path}")
     else:
-        # This block will run on local development (or if the file is missing on Render)
-        logger.info(f"'{key_path}' not found. Falling back to GOOGLE_APPLICATION_CREDENTIALS env var.")
-        # This relies on the GOOGLE_APPLICATION_CREDENTIALS environment variable
-        # set in the .env file for local development.
         cred = credentials.ApplicationDefault()
+        logger.info("Initializing Firebase from Application Default Credentials.")
 
-    # Initialize the Firebase app with the determined credentials
     firebase_admin.initialize_app(cred)
-    logger.info("Firebase initialized successfully.")
-    
-    # Get a client to the Firestore service
     db_firestore = firestore.client()
-    # Create a reference to the collection we'll use for caching summaries
-    summaries_collection = db_firestore.collection('summaries')
-
+    analyzed_news_collection = db_firestore.collection('analyzed_news')
+    logger.info("Firebase initialized successfully.")
 except Exception as e:
     logger.error(f"FATAL: Failed to initialize Firebase: {e}. Caching will be disabled.", exc_info=True)
-    summaries_collection = None
+    analyzed_news_collection = None
 
 
-# --- Data Classes (Application's internal data structures) ---
+# --- Constants ---
+RSS_FEEDS = {
+    'Yahoo Finance': 'https://finance.yahoo.com/news/rssindex',
+    'Reuters Business': 'http://feeds.reuters.com/reuters/businessNews',
+    'CNBC Top News': 'https://www.cnbc.com/id/100003114/device/rss/rss.html'
+}
+
+# --- Data Classes ---
 @dataclass
-class NewsArticle:
-    id: str
+class StockData:
+    symbol: str
+    price: float
+    change: float
+    percent_change: float
+
+@dataclass
+class NewsItem:
+    id: str # Use URL as ID
     title: str
-    content: str
-    url: str
-    published_at: datetime
+    link: str
     source: str
-    category: str = "general"
+    published: datetime
+    content: str = ""
+    analysis: Optional[Dict[str, Any]] = None
 
-@dataclass
-class Summary:
-    article_id: str
-    simple_summary: str
-    key_points: List[str]
-    impact_analysis: str
-    investment_implications: str
-    difficulty_level: str
-    reading_time_minutes: int
+# --- Service Classes ---
 
+class MarketDataProvider:
+    """Fetches live stock market data."""
+    def get_stock_data(self, symbols: List[str]) -> Dict[str, StockData]:
+        if not symbols: return {}
+        data = {}
+        logger.info(f"Fetching stock data for: {symbols}")
+        tickers = yf.Tickers(' '.join(symbols))
+        for symbol in symbols:
+            try:
+                info = tickers.tickers[symbol].fast_info
+                price, prev_close = info.get('last_price'), info.get('previous_close')
+                if price and prev_close:
+                    change = price - prev_close
+                    data[symbol] = StockData(
+                        symbol=symbol,
+                        price=round(price, 2),
+                        change=round(change, 2),
+                        percent_change=round((change / prev_close) * 100, 2)
+                    )
+            except Exception as e:
+                logger.error(f"Could not fetch data for {symbol}: {e}")
+        return data
 
-# --- FirestoreManager (Handles all database operations) ---
-class FirestoreManager:
-    """A manager class to abstract Firestore operations."""
-    
-    def find_summary_by_article_id(self, article_id: str) -> Optional[Summary]:
-        if not summaries_collection: return None
-        try:
-            doc = summaries_collection.document(article_id).get()
-            if doc.exists:
-                logger.info(f"Cache hit in Firestore for article ID {article_id}.")
-                return Summary(**doc.to_dict())
-            return None
-        except Exception as e:
-            logger.error(f"Error finding document '{article_id}' in Firestore: {e}")
-            return None
-
-    def save_summary(self, summary: Summary):
-        if not summaries_collection: return
-        try:
-            summaries_collection.document(summary.article_id).set(asdict(summary))
-            logger.info(f"Saved summary for article ID {summary.article_id} to Firestore.")
-        except Exception as e:
-            logger.error(f"Error saving document for article ID {summary.article_id} to Firestore: {e}")
-
-
-# --- NewsAggregator (Fetches news, currently using mock data) ---
 class NewsAggregator:
-    def fetch_financial_news(self, limit: int = 3) -> List[NewsArticle]:
-        mock_articles_data = [
-            {"id": "fed-rates-decision-2024", "title": "Federal Reserve Announces Interest Rate Decision", "content": "The Federal Reserve announced today that it will maintain current interest rates at 5.25-5.5% range, citing ongoing concerns about inflation and employment data. The decision comes after weeks of speculation about potential rate cuts. Fed Chair Jerome Powell emphasized the committee's commitment to bringing inflation down to the 2% target while maintaining a strong labor market. Economic indicators show mixed signals, with unemployment at 3.7% and core inflation at 3.2%. The decision affects mortgage rates, business lending, and overall economic growth.", "url": "https://example.com/fed-rates", "published_at": datetime.now() - timedelta(hours=2), "source": "Financial Times", "category": "monetary_policy"},
-            {"id": "tesla-q4-earnings-2024", "title": "Tesla Stock Surges 15% on Q4 Earnings Beat", "content": "Tesla Inc. shares jumped 15% in after-hours trading following the company's stronger-than-expected Q4 earnings report. The electric vehicle maker reported earnings per share of $0.71, beating analyst estimates of $0.63. Revenue reached $25.2 billion, up 3% year-over-year. CEO Elon Musk highlighted improved production efficiency and strong demand in China and Europe. The company delivered 484,507 vehicles in Q4.", "url": "https://example.com/tesla-earnings", "published_at": datetime.now() - timedelta(hours=1), "source": "Reuters", "category": "earnings"},
-            {"id": "bitcoin-ath-2024", "title": "Bitcoin Hits New All-Time High Above $73,000", "content": "Bitcoin reached a new all-time high of $73,147 today, driven by increased institutional adoption and speculation about potential Bitcoin ETF approvals. The cryptocurrency has gained over 160% year-to-date. Major factors include MicroStrategy's additional $1.5 billion Bitcoin purchase. However, analysts warn of potential volatility.", "url": "https://example.com/bitcoin-ath", "published_at": datetime.now() - timedelta(minutes=30), "source": "CoinDesk", "category": "cryptocurrency"}
-        ]
-        return [NewsArticle(**data) for data in mock_articles_data[:limit]]
+    """Aggregates and scrapes news from multiple RSS feeds."""
+    def _scrape_content(self, url: str) -> str:
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'}
+            response = requests.get(url, headers=headers, timeout=8)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.content, 'lxml')
+            paragraphs = soup.find_all('p')
+            text = ' '.join(p.get_text(strip=True) for p in paragraphs)
+            return text[:2500]
+        except Exception as e:
+            logger.warning(f"Scraping failed for {url}: {e}")
+            return ""
 
+    def _fetch_from_feed(self, source_name: str, url: str) -> List[NewsItem]:
+        logger.info(f"Fetching from {source_name}")
+        feed = feedparser.parse(url)
+        items = []
+        for entry in feed.entries[:7]: # Get latest 7 from each source
+            try:
+                published_dt = datetime(*entry.published_parsed[:6]) if hasattr(entry, 'published_parsed') else datetime.now()
+                items.append(NewsItem(id=entry.link, title=entry.title, link=entry.link, source=source_name, published=published_dt))
+            except Exception as e:
+                logger.warning(f"Could not parse entry from {source_name}: {e}")
+        return items
 
-# --- AIProcessor (Handles interaction with the Groq LLM) ---
+    def get_latest_news(self, limit: int = 15) -> List[NewsItem]:
+        all_items = []
+        with ThreadPoolExecutor(max_workers=len(RSS_FEEDS)) as executor:
+            future_to_feed = {executor.submit(self._fetch_from_feed, name, url): name for name, url in RSS_FEEDS.items()}
+            for future in future_to_feed:
+                all_items.extend(future.result())
+
+        unique_items = {item.id: item for item in all_items}
+        sorted_items = sorted(unique_items.values(), key=lambda x: x.published, reverse=True)
+        
+        top_items = sorted_items[:limit]
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            scraped_contents = list(executor.map(self._scrape_content, [item.link for item in top_items]))
+            for item, content in zip(top_items, scraped_contents):
+                item.content = content
+        
+        return [item for item in top_items if len(item.content) > 150]
+
 class AIProcessor:
+    """Handles all interactions with the Groq LLM for advanced analysis."""
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY")
         self.client = Groq(api_key=self.api_key) if self.api_key else None
-        if not self.client:
-            logger.warning("GROQ_API_KEY not found. AI features will be disabled.")
+        if not self.client: logger.warning("GROQ_API_KEY not found.")
         self.model = "llama3-8b-8192"
 
-    def generate_summary(self, article: NewsArticle, user_level: str) -> Summary:
-        if not self.client:
-            return Summary(article_id=article.id, simple_summary="AI processor is offline.", key_points=[], impact_analysis="", investment_implications="", difficulty_level="N/A", reading_time_minutes=1)
-        
-        prompt = f"""
-        You are an expert financial analyst who simplifies complex news for investors.
-        Summarize the following financial news article for an investor with a '{user_level}' experience level.
+    def analyze_news_item(self, news_item: NewsItem) -> Optional[Dict[str, Any]]:
+        if not self.client or not news_item.content: return None
+        prompt = f"""You are a top-tier financial analyst AI for an app called FinanceFlow. Analyze the provided news article.
 
-        Article Title: "{article.title}"
-        Article Content: "{article.content}"
+        Source: {news_item.source}
+        Title: {news_item.title}
+        Content: {news_item.content}
 
-        Your task is to return a JSON object with the following exact structure:
+        Return a JSON object with this exact structure:
         {{
-          "article_id": "{article.id}",
-          "simple_summary": "A very simple, one-paragraph explanation of the news. Write it as if explaining to a friend.",
-          "key_points": ["A list of 3-4 most important bullet points from the article."],
-          "impact_analysis": "A brief analysis of what this news could mean for the market or the specific company/asset. Explain the 'so what?'.",
-          "investment_implications": "Provide a short, balanced view on potential investment considerations. Do not give direct financial advice. Use phrases like 'Investors might consider...' or 'This could be positive/negative for...'.",
-          "difficulty_level": "Classify the topic's complexity as 'beginner', 'intermediate', or 'advanced'.",
-          "reading_time_minutes": 2
+          "summary_en": "A concise, one-paragraph summary of the article in English.",
+          "summary_th": "A fluent, natural-sounding Thai translation of the English summary.",
+          "sentiment": "Analyze the sentiment. Choose one: 'Positive', 'Negative', 'Neutral'.",
+          "impact_score": "On a scale of 1-10, how impactful is this news for an average investor?",
+          "affected_symbols": ["A list of stock ticker symbols (e.g., 'AAPL', 'NVDA') directly mentioned or heavily implied in the text."]
         }}
-
-        Do not include any introductory text. Only return the valid JSON.
-        """
-        
-        try:
-            chat_completion = self.client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model,
-                temperature=0.2,
-                max_tokens=1024,
-                response_format={"type": "json_object"}
-            )
-            summary_data = json.loads(chat_completion.choices[0].message.content)
-            return Summary(**summary_data)
-        except Exception as e:
-            logger.error(f"Groq API call failed: {e}")
-            return Summary(article_id=article.id, simple_summary="AI summary could not be generated at this time.", key_points=[], impact_analysis="N/A", investment_implications="N/A", difficulty_level="N/A", reading_time_minutes=1)
-
-    def generate_daily_brief(self, articles: List[NewsArticle], user_assets: List[str]) -> Dict:
-        if not self.client:
-            return {"date": datetime.now().strftime("%B %d, %Y"), "market_overview": "AI processor is offline.", "key_themes": [], "tomorrow_watch": []}
-
-        article_titles = "\n- ".join([f'"{a.title}"' for a in articles])
-        assets_str = ", ".join(user_assets) if user_assets else "general market"
-        
-        prompt = f"""
-        You are a financial news editor for an app called FinanceFlow. Your task is to write a concise daily market briefing for a user interested in: {assets_str}.
-
-        Today's key news headlines are:
-        - {article_titles}
-
-        Based on these headlines, generate a JSON object with the following structure:
-        {{
-          "date": "{datetime.now().strftime("%B %d, %Y")}",
-          "market_overview": "A one-paragraph summary of the overall market sentiment today based on the headlines. Is it positive, negative, or mixed?",
-          "key_themes": ["A list of 2-3 major themes or trends observed from today's news."],
-          "tomorrow_watch": ["A list of 2-3 things investors should watch out for tomorrow, based on today's events."]
-        }}
-        
-        Do not include any introductory text. Only return the valid JSON.
         """
         try:
-            chat_completion = self.client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model,
-                temperature=0.2,
-                max_tokens=1024,
-                response_format={"type": "json_object"}
-            )
+            chat_completion = self.client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model=self.model, temperature=0.1, response_format={"type": "json_object"})
             return json.loads(chat_completion.choices[0].message.content)
         except Exception as e:
-            logger.error(f"Groq API call for daily brief failed: {e}")
-            return {"date": datetime.now().strftime("%B %d, %Y"), "market_overview": "Could not generate brief.", "key_themes": [], "tomorrow_watch": []}
+            logger.error(f"Groq analysis failed for {news_item.link}: {e}")
+            return None
+
+    def answer_user_question(self, question: str, news_context: List[NewsItem]) -> str:
+        if not self.client: return "AI processor is offline."
+        context_str = "\n\n".join([f"Title: {item.title}\nSummary: {item.analysis['summary_en']}" for item in news_context if item.analysis])
+        prompt = f"""You are a helpful AI investment assistant. Answer the user's question in Thai based *only* on the provided context. Do not give direct financial advice. If the context is insufficient, state that.
+
+        CONTEXT:
+        ---
+        {context_str}
+        ---
+        
+        USER QUESTION: "{question}"
+
+        YOUR ANSWER (in Thai):
+        """
+        try:
+            chat_completion = self.client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model=self.model, temperature=0.5)
+            return chat_completion.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Groq Q&A failed: {e}")
+            return "ขออภัยค่ะ เกิดข้อผิดพลาดในการประมวลผลคำตอบ"
 
 
-# --- Flask Application Setup ---
-app = Flask(__name__)
-CORS(app)
-
-# Initialize components
-firestore_manager = FirestoreManager()
-news_fetcher = NewsAggregator()
+# --- Application Components ---
+news_aggregator = NewsAggregator()
+market_provider = MarketDataProvider()
 ai_processor = AIProcessor()
 
-# Read the frontend file into a variable once at startup
-try:
-    with open('finance_news_frontend.html', 'r', encoding='utf-8') as f:
-        FRONTEND_HTML = f.read()
-except FileNotFoundError:
-    logger.error("FATAL: finance_news_frontend.html not found. App will not serve frontend.")
-    FRONTEND_HTML = "<h1>Error: Frontend file not found. Please check deployment.</h1>"
+# --- Flask App & API Endpoints ---
+app = Flask(__name__, template_folder='templates', static_folder='static')
+CORS(app)
+
+# Global cache for news to avoid re-fetching on every API call
+news_cache: List[NewsItem] = []
+cache_expiry = datetime.now()
+
+def get_analyzed_news() -> List[NewsItem]:
+    global news_cache, cache_expiry
+    if not news_cache or datetime.now() > cache_expiry:
+        logger.info("News cache expired. Fetching and analyzing...")
+        fresh_news = news_aggregator.get_latest_news()
+        
+        # Check Firestore cache first
+        items_to_analyze = []
+        for item in fresh_news:
+            if analyzed_news_collection:
+                cached_doc = analyzed_news_collection.document(item.id).get()
+                if cached_doc.exists:
+                    item.analysis = cached_doc.to_dict()
+                    logger.info(f"Firestore cache hit for {item.id}")
+                else:
+                    items_to_analyze.append(item)
+            else:
+                items_to_analyze.append(item)
+
+        # Analyze only the items not found in cache
+        if items_to_analyze:
+            logger.info(f"Analyzing {len(items_to_analyze)} new articles.")
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                analyses = list(executor.map(ai_processor.analyze_news_item, items_to_analyze))
+            
+            for item, analysis in zip(items_to_analyze, analyses):
+                if analysis:
+                    item.analysis = analysis
+                    # Save new analysis to Firestore
+                    if analyzed_news_collection:
+                        analyzed_news_collection.document(item.id).set(analysis)
+
+        news_cache = [item for item in fresh_news if item.analysis]
+        cache_expiry = datetime.now() + timedelta(minutes=10)
+    
+    return news_cache
 
 
-# --- API Routes ---
 @app.route('/')
 def index():
-    return render_template_string(FRONTEND_HTML)
+    return render_template('index.html')
 
-@app.route('/api/news')
-def get_news():
+@app.route('/api/main_feed')
+def get_main_feed():
     try:
-        level = request.args.get('level', 'beginner')
-        articles = news_fetcher.fetch_financial_news()
-        response_data = []
+        analyzed_news = get_analyzed_news()
+        all_symbols = set(sym for item in analyzed_news for sym in item.analysis.get('affected_symbols', []))
+        stock_data = market_provider.get_stock_data(list(all_symbols)[:10]) # Limit symbols for performance
         
-        for article in articles:
-            summary = firestore_manager.find_summary_by_article_id(article.id)
-            if not summary:
-                logger.info(f"Cache miss for article ID {article.id}. Calling Groq API.")
-                summary = ai_processor.generate_summary(article, level)
-                firestore_manager.save_summary(summary)
-            
-            article_data = asdict(article)
-            article_data['published_at'] = article.published_at.isoformat()
-            response_data.append({'article': article_data, 'summary': asdict(summary)})
-            
-        return jsonify({'status': 'success', 'data': response_data})
+        response_data = {
+            "news": [asdict(item) for item in analyzed_news],
+            "stocks": {symbol: asdict(data) for symbol, data in stock_data.items()}
+        }
+        return jsonify({"status": "success", "data": response_data})
     except Exception as e:
-        logger.error(f"Error in /api/news: {e}", exc_info=True)
-        return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
+        logger.error(f"Error in main_feed endpoint: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": "Could not load feed."}), 500
 
-@app.route('/api/daily-brief')
-def get_daily_brief():
-    try:
-        assets_str = request.args.get('assets', 'tesla,bitcoin')
-        user_assets = assets_str.split(',') if assets_str else []
-        articles = news_fetcher.fetch_financial_news()
-        brief = ai_processor.generate_daily_brief(articles, user_assets)
-        return jsonify({'status': 'success', 'data': brief})
-    except Exception as e:
-        logger.error(f"Error in /api/daily-brief: {e}", exc_info=True)
-        return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
+@app.route('/api/ask', methods=['POST'])
+def ask_question():
+    data = request.get_json()
+    question = data.get('question')
+    if not question:
+        return jsonify({"status": "error", "message": "No question provided."}), 400
 
-# This block is for local development only.
-# Gunicorn, the production server on Render, will not run this.
+    news_context = news_cache # Use the already fetched news
+    answer = ai_processor.answer_user_question(question, news_context)
+    return jsonify({"status": "success", "answer": answer})
+
 if __name__ == '__main__':
-    print("🚀 Starting FinanceFlow [LOCAL DEVELOPMENT MODE WITH FIREBASE]")
+    print("🚀 Starting FinanceFlow [LOCAL DEVELOPMENT MODE]")
     app.run(debug=True, host='0.0.0.0', port=5000)

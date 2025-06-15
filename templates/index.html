@@ -1,0 +1,47 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>FinanceFlow - AI Investment Assistant</title>
+    <!-- Link to our external CSS file -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <!-- Google Fonts for better typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- Stock Ticker Bar at the top -->
+    <div class="stock-ticker-bar" id="stock-bar-container">
+        <!-- Stock data will be injected here -->
+    </div>
+
+    <!-- Main container for the news feed -->
+    <main class="app-container" id="news-container">
+        <!-- Loading state -->
+        <div class="loading-screen">
+            <div class="spinner"></div>
+            <h1>FinanceFlow</h1>
+            <p>Fetching latest market data...</p>
+        </div>
+    </main>
+
+    <!-- Q&A Section at the bottom -->
+    <footer class="qa-footer">
+        <div class="qa-input-wrapper">
+            <input type="text" id="qa-input" placeholder="Ask about the latest news... (e.g., How is Apple doing?)">
+            <button id="qa-button" onclick="handleAskQuestion()">Ask AI</button>
+        </div>
+        <div class="qa-answer" id="qa-answer-box">
+            <!-- AI's answer will appear here -->
+        </div>
+    </footer>
+
+    <!-- Link to our external JavaScript file -->
+    <!-- The 'defer' attribute makes sure the script runs after the HTML is parsed -->
+    <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
+</body>
+</html>

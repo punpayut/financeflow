@@ -1,0 +1,206 @@
+/* static/css/style.css */
+
+/* --- Core & Body Styles --- */
+:root {
+    --positive-color: #2ecc71;
+    --negative-color: #e74c3c;
+    --neutral-color: #95a5a6;
+    --background-color: #121212;
+    --card-background: #1e1e1e;
+    --text-primary: #ffffff;
+    --text-secondary: #b3b3b3;
+    --accent-color: #bb86fc;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+    overflow: hidden;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--background-color);
+    color: var(--text-primary);
+}
+
+/* --- Stock Ticker Bar --- */
+.stock-ticker-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(10px);
+    z-index: 1000;
+    padding: 8px 0;
+    border-bottom: 1px solid #333;
+    white-space: nowrap;
+    overflow-x: hidden;
+}
+.stock-ticker-inner {
+    display: inline-block;
+    animation: ticker-scroll 45s linear infinite;
+}
+.stock-box {
+    display: inline-block;
+    padding: 0 20px;
+    font-size: 14px;
+}
+.stock-box .symbol {
+    font-weight: bold;
+}
+.stock-box .price {
+    margin-left: 8px;
+}
+.stock-box .change {
+    margin-left: 8px;
+    font-weight: 600;
+}
+.positive { color: var(--positive-color); }
+.negative { color: var(--negative-color); }
+
+@keyframes ticker-scroll {
+    0% { transform: translateX(0%); }
+    100% { transform: translateX(-50%); }
+}
+
+
+/* --- Main App Container (News Feed) --- */
+.app-container {
+    height: 100vh;
+    padding-top: 50px; /* Space for stock bar */
+    padding-bottom: 100px; /* Space for Q&A footer */
+    overflow-y: scroll;
+    scroll-snap-type: y mandatory;
+    -webkit-overflow-scrolling: touch;
+}
+
+.story-card {
+    height: calc(100vh - 150px); /* Adjust height to fit screen */
+    margin: 20px;
+    scroll-snap-align: center; /* Snap to the center of the card */
+    background: var(--card-background);
+    border-radius: 20px;
+    border: 1px solid #333;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: transform 0.3s ease;
+}
+.story-card:hover {
+    transform: translateY(-5px);
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.card-source { font-weight: bold; }
+
+.card-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 15px;
+    line-height: 1.4;
+}
+
+.card-summary {
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    flex-grow: 1;
+    overflow-y: auto;
+}
+
+.card-footer {
+    margin-top: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 14px;
+}
+.sentiment-badge {
+    padding: 5px 10px;
+    border-radius: 15px;
+    font-weight: bold;
+}
+.sentiment-Positive { background-color: var(--positive-color); color: #000; }
+.sentiment-Negative { background-color: var(--negative-color); color: #fff; }
+.sentiment-Neutral { background-color: var(--neutral-color); color: #000; }
+
+.impact-score, .source-link {
+    font-weight: 600;
+    color: var(--accent-color);
+    text-decoration: none;
+}
+
+
+/* --- Q&A Footer --- */
+.qa-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid #333;
+    padding: 15px 20px;
+    z-index: 1000;
+}
+.qa-input-wrapper {
+    display: flex;
+}
+#qa-input {
+    flex-grow: 1;
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 20px;
+    padding: 10px 15px;
+    color: var(--text-primary);
+    font-size: 14px;
+    margin-right: 10px;
+}
+#qa-button {
+    background: var(--accent-color);
+    border: none;
+    color: #000;
+    font-weight: bold;
+    border-radius: 20px;
+    padding: 10px 20px;
+    cursor: pointer;
+}
+.qa-answer {
+    margin-top: 10px;
+    font-size: 14px;
+    color: var(--text-secondary);
+    min-height: 20px;
+}
+
+
+/* --- Loading & Utility --- */
+.loading-screen, .error-screen {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+    text-align: center;
+}
+.spinner {
+    border: 4px solid rgba(255, 255, 255, 0.2);
+    border-top: 4px solid var(--accent-color);
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    animation: spin 1s linear infinite;
+    margin-bottom: 20px;
+}
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
