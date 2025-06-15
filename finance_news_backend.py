@@ -1,4 +1,4 @@
-# finance_news_backend.py (Simplified Web App Version - Corrected Syntax)
+# finance_news_backend.py (Data Sanitization Fix Version)
 
 """
 FinanceFlow Web App (Production Ready)
@@ -8,11 +8,12 @@ FinanceFlow Web App (Production Ready)
   2. Fetching pre-analyzed news from Firestore.
   3. Fetching real-time stock prices.
   4. Handling user Q&A requests by querying the AI.
-- It does NOT fetch or analyze RSS feeds; that is handled by worker.py.
+- Includes a data sanitization step to validate ticker symbols from the AI.
 """
 
 # --- Imports ---
 import os
+import re  # <-- Import for regular expressions
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -64,31 +65,50 @@ class NewsItem:
     title: str
     link: str
     source: str
-    published: any # Use 'any' to handle both datetime and string from Firestore
+    published: Any # Use 'any' to handle both datetime and string from Firestore
     content: str = ""
     analysis: Optional[Dict[str, Any]] = None
 
-# --- Service Classes (Simplified for Web App) ---
+# --- NEW Utility Function ---
+def is_valid_ticker(symbol: str) -> bool:
+    """A simple validator to filter out invalid ticker symbols returned by the AI."""
+    if not symbol or not isinstance(symbol, str):
+        return False  # Filter out empty or non-string symbols
+    if len(symbol) > 6 or len(symbol) < 1:
+        return False  # Tickers are typically 1-6 characters
+    if ' ' in symbol:
+        return False  # Tickers do not contain spaces
+    # A valid ticker contains uppercase letters, and may contain a dot or a dash.
+    if not re.match(r'^[A-Z0-9.-]+$', symbol):
+        return False
+    return True
+
+# --- Service Classes ---
 class MarketDataProvider:
     """Fetches live stock market data."""
     def get_stock_data(self, symbols: List[str]) -> Dict[str, StockData]:
         if not symbols: return {}
         data = {}
         logger.info(f"WEB APP: Fetching stock data for: {symbols}")
-        tickers = yf.Tickers(' '.join(symbols))
-        for symbol in symbols:
-            try:
-                info = tickers.tickers[symbol].fast_info
-                price, prev_close = info.get('last_price'), info.get('previous_close')
-                if price and prev_close:
-                    data[symbol] = StockData(
-                        symbol=symbol,
-                        price=round(price, 2),
-                        change=round(price - prev_close, 2),
-                        percent_change=round(((price - prev_close) / prev_close) * 100, 2)
-                    )
-            except Exception as e:
-                logger.error(f"WEB APP: Could not fetch stock data for {symbol}: {e}")
+        try:
+            tickers = yf.Tickers(' '.join(symbols))
+            for symbol in symbols:
+                try:
+                    # Use .info which is more comprehensive, or stick to fast_info
+                    info = tickers.tickers[symbol].fast_info
+                    price, prev_close = info.get('last_price'), info.get('previous_close')
+                    if price and prev_close:
+                        data[symbol] = StockData(
+                            symbol=symbol,
+                            price=round(price, 2),
+                            change=round(price - prev_close, 2),
+                            percent_change=round(((price - prev_close) / prev_close) * 100, 2)
+                        )
+                except Exception as e:
+                    # Log error for a specific ticker but continue with others
+                    logger.warning(f"WEB APP: Could not fetch data for an individual ticker '{symbol}': {e}")
+        except Exception as e:
+            logger.error(f"WEB APP: A general error occurred in yfinance Tickers call: {e}")
         return data
 
 class AIProcessor:
@@ -143,18 +163,23 @@ def get_main_feed():
     if not analyzed_news_collection:
         return jsonify({"status": "error", "message": "Database connection not available."}), 500
     try:
-        # Query Firestore for the latest 25 news items, ordered by publish time
         query = analyzed_news_collection.order_by("published", direction=firestore.Query.DESCENDING).limit(25)
         docs = query.stream()
-        
-        # Firestore returns documents, convert them to dictionaries
         news_from_db = [doc.to_dict() for doc in docs]
         
-        # Extract all affected symbols from the news to fetch their prices
-        all_symbols = set(sym.upper() for item in news_from_db for sym in item.get('analysis', {}).get('affected_symbols', []))
+        # --- DATA SANITIZATION LOGIC ---
         
-        # Fetch stock prices for the extracted symbols
-        stock_data = market_provider.get_stock_data(list(all_symbols)[:20]) # Limit symbols for performance
+        # 1. Gather all raw symbols suggested by the AI
+        raw_symbols = set(sym.upper() for item in news_from_db for sym in item.get('analysis', {}).get('affected_symbols', []))
+        
+        # 2. Filter for valid ticker formats
+        valid_symbols = {sym for sym in raw_symbols if is_valid_ticker(sym)}
+        
+        logger.info(f"WEB APP: Raw symbols from AI: {raw_symbols}")
+        logger.info(f"WEB APP: Validated symbols for fetching: {valid_symbols}")
+        
+        # 3. Fetch stock prices using only the cleaned list of symbols
+        stock_data = market_provider.get_stock_data(list(valid_symbols)[:20])
         
         response_data = {
             "news": news_from_db,
@@ -176,11 +201,8 @@ def ask_question():
         return jsonify({"status": "error", "message": "Database connection not available for context."}), 500
 
     try:
-        # Fetch latest news to use as context for the Q&A
         query = analyzed_news_collection.order_by("published", direction=firestore.Query.DESCENDING).limit(10)
         docs = query.stream()
-        
-        # Re-create NewsItem objects from Firestore data for type consistency
         news_context = [NewsItem(**doc.to_dict()) for doc in docs]
 
         answer = ai_processor_for_qa.answer_user_question(question, news_context)
