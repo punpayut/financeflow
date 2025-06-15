@@ -1,14 +1,20 @@
+# finance_news_backend.py
+
 """
-FinanceFlow - Production Ready for Render.com
-- Uses .env for local development
-- Uses environment variables on Render
-- Dynamically sets database path for persistent storage
+FinanceFlow - Production Ready for Render.com with Firebase Firestore
+- Uses .env for local development via python-dotenv
+- Uses environment variables on Render (via Secret File for Firebase key)
+- Uses Firestore for persistent, free database caching
+- Uses Gunicorn as the production WSGI server
 """
-import json
-import sqlite3
+
+# --- Standard Library Imports ---
 import os
+import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
+
+# --- Third-party Imports ---
 import requests
 from dataclasses import dataclass, asdict
 from groq import Groq
@@ -17,96 +23,107 @@ from flask_cors import CORS
 import logging
 from dotenv import load_dotenv
 
-# Load .env file for local development
+# NEW: Firebase Admin SDK for database
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# --- Load .env and Initialize Services ---
+# This line loads variables from the .env file into the environment.
+# It's crucial for local development.
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging to see output in Render's logs
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# --- Firebase Initialization ---
+# This block attempts to initialize the connection to your Firestore database.
+try:
+    # On Render, the GOOGLE_APPLICATION_CREDENTIALS environment variable is automatically
+    # set when you add a Secret File named 'google-credentials.json'.
+    # For local development, this variable should be in your .env file,
+    # pointing to the path of your downloaded key file.
+    cred = credentials.ApplicationDefault()
+    firebase_admin.initialize_app(cred, {
+        'projectId': os.getenv('FIREBASE_PROJECT_ID'), # Optional: Helps SDK find the project
+    })
+    logger.info("Firebase initialized successfully.")
+    # Get a client to the Firestore service
+    db_firestore = firestore.client()
+    # Create a reference to the collection we'll use for caching summaries
+    summaries_collection = db_firestore.collection('summaries')
+except Exception as e:
+    logger.error(f"FATAL: Failed to initialize Firebase: {e}. Caching will be disabled.")
+    summaries_collection = None
 
-# --- Dynamic Database Path Configuration ---
-# Render sets the 'RENDER' environment variable to 'true'
-IS_ON_RENDER = os.getenv('RENDER') == 'true'
 
-if IS_ON_RENDER:
-    # If on Render, use the persistent disk mount path
-    DATA_DIR = "/data"
-    DB_PATH = os.path.join(DATA_DIR, "financeflow.db")
-    logger.info(f"Running on Render. Using database path: {DB_PATH}")
-else:
-    # If running locally, use a local file
-    DB_PATH = "financeflow.db"
-    logger.info(f"Running locally. Using database path: {DB_PATH}")
-
-
-# --- Data Classes (No changes) ---
+# --- Data Classes (Application's internal data structures) ---
 @dataclass
-class NewsArticle: id: str; title: str; content: str; url: str; published_at: datetime; source: str; category: str = "general"; sentiment: str = "neutral"
+class NewsArticle:
+    id: str
+    title: str
+    content: str
+    url: str
+    published_at: datetime
+    source: str
+    category: str = "general"
+
 @dataclass
-class Summary: article_id: str; simple_summary: str; key_points: List[str]; impact_analysis: str; investment_implications: str; difficulty_level: str; reading_time_minutes: int
+class Summary:
+    article_id: str
+    simple_summary: str
+    key_points: List[str]
+    impact_analysis: str
+    investment_implications: str
+    difficulty_level: str
+    reading_time_minutes: int
 
 
-# --- DatabaseManager (Updated for Render) ---
-class DatabaseManager:
-    def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
-        # Ensure the directory for the database exists, especially on Render
-        if IS_ON_RENDER:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self.init_database()
+# --- FirestoreManager (Handles all database operations) ---
+class FirestoreManager:
+    """A manager class to abstract Firestore operations."""
     
-    def init_database(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, title TEXT, content TEXT, url TEXT, published_at TIMESTAMP, source TEXT, category TEXT, sentiment TEXT)''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS summaries (id INTEGER PRIMARY KEY AUTOINCREMENT, article_id TEXT UNIQUE, simple_summary TEXT, key_points TEXT, impact_analysis TEXT, investment_implications TEXT, difficulty_level TEXT, reading_time_minutes INTEGER, FOREIGN KEY (article_id) REFERENCES articles (id))''')
-        conn.commit()
-        conn.close()
-
     def find_summary_by_article_id(self, article_id: str) -> Optional[Summary]:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM summaries WHERE article_id = ?", (article_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            summary_data = dict(row)
-            summary_data['key_points'] = json.loads(summary_data['key_points'])
-            # Remove the auto-increment id before creating the dataclass instance
-            summary_data.pop('id', None)
-            return Summary(**summary_data)
-        return None
+        """Fetches a summary from the Firestore 'summaries' collection."""
+        if not summaries_collection:
+            return None # Firebase was not initialized
+        try:
+            doc_ref = summaries_collection.document(article_id)
+            doc = doc_ref.get()
+            if doc.exists:
+                logger.info(f"Cache hit in Firestore for article ID {article_id}.")
+                return Summary(**doc.to_dict())
+            return None
+        except Exception as e:
+            logger.error(f"Error finding document '{article_id}' in Firestore: {e}")
+            return None
 
     def save_summary(self, summary: Summary):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR IGNORE INTO summaries 
-            (article_id, simple_summary, key_points, impact_analysis, 
-             investment_implications, difficulty_level, reading_time_minutes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            summary.article_id, summary.simple_summary, json.dumps(summary.key_points),
-            summary.impact_analysis, summary.investment_implications,
-            summary.difficulty_level, summary.reading_time_minutes
-        ))
-        conn.commit()
-        conn.close()
+        """Saves a summary dataclass to Firestore, using its article_id as the document ID."""
+        if not summaries_collection:
+            return # Firebase was not initialized
+        try:
+            doc_ref = summaries_collection.document(summary.article_id)
+            # Use asdict to convert the dataclass to a dictionary, which Firestore can store.
+            doc_ref.set(asdict(summary))
+            logger.info(f"Saved summary for article ID {summary.article_id} to Firestore.")
+        except Exception as e:
+            logger.error(f"Error saving document for article ID {summary.article_id} to Firestore: {e}")
 
 
-# --- NewsAggregator & AIProcessor (No changes from previous complete version) ---
+# --- NewsAggregator (Fetches news, currently using mock data) ---
 class NewsAggregator:
     def fetch_financial_news(self, limit: int = 3) -> List[NewsArticle]:
-        # Mock data for demonstration
+        """In a real app, this would call a News API. Here, we use mock data."""
         mock_articles_data = [
-            {"id": "1", "title": "Federal Reserve Announces Interest Rate Decision", "content": "The Federal Reserve announced today that it will maintain current interest rates at 5.25-5.5% range...", "url": "https://example.com/fed-rates", "published_at": datetime.now() - timedelta(hours=2), "source": "Financial Times", "category": "monetary_policy"},
-            {"id": "2", "title": "Tesla Stock Surges 15% on Q4 Earnings Beat", "content": "Tesla Inc. shares jumped 15% in after-hours trading...", "url": "https://example.com/tesla-earnings", "published_at": datetime.now() - timedelta(hours=1), "source": "Reuters", "category": "earnings"},
-            {"id": "3", "title": "Bitcoin Hits New All-Time High Above $73,000", "content": "Bitcoin reached a new all-time high of $73,147 today...", "url": "https://example.com/bitcoin-ath", "published_at": datetime.now() - timedelta(minutes=30), "source": "CoinDesk", "category": "cryptocurrency"}
+            {"id": "fed-rates-decision-2024", "title": "Federal Reserve Announces Interest Rate Decision", "content": "The Federal Reserve announced today that it will maintain current interest rates at 5.25-5.5% range, citing ongoing concerns about inflation and employment data. The decision comes after weeks of speculation about potential rate cuts. Fed Chair Jerome Powell emphasized the committee's commitment to bringing inflation down to the 2% target while maintaining a strong labor market. Economic indicators show mixed signals, with unemployment at 3.7% and core inflation at 3.2%. The decision affects mortgage rates, business lending, and overall economic growth.", "url": "https://example.com/fed-rates", "published_at": datetime.now() - timedelta(hours=2), "source": "Financial Times", "category": "monetary_policy"},
+            {"id": "tesla-q4-earnings-2024", "title": "Tesla Stock Surges 15% on Q4 Earnings Beat", "content": "Tesla Inc. shares jumped 15% in after-hours trading following the company's stronger-than-expected Q4 earnings report. The electric vehicle maker reported earnings per share of $0.71, beating analyst estimates of $0.63. Revenue reached $25.2 billion, up 3% year-over-year. CEO Elon Musk highlighted improved production efficiency and strong demand in China and Europe. The company delivered 484,507 vehicles in Q4.", "url": "https://example.com/tesla-earnings", "published_at": datetime.now() - timedelta(hours=1), "source": "Reuters", "category": "earnings"},
+            {"id": "bitcoin-ath-2024", "title": "Bitcoin Hits New All-Time High Above $73,000", "content": "Bitcoin reached a new all-time high of $73,147 today, driven by increased institutional adoption and speculation about potential Bitcoin ETF approvals. The cryptocurrency has gained over 160% year-to-date. Major factors include MicroStrategy's additional $1.5 billion Bitcoin purchase. However, analysts warn of potential volatility.", "url": "https://example.com/bitcoin-ath", "published_at": datetime.now() - timedelta(minutes=30), "source": "CoinDesk", "category": "cryptocurrency"}
         ]
         return [NewsArticle(**data) for data in mock_articles_data[:limit]]
 
+
+# --- AIProcessor (Handles interaction with the Groq LLM) ---
 class AIProcessor:
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY")
@@ -117,71 +134,126 @@ class AIProcessor:
 
     def generate_summary(self, article: NewsArticle, user_level: str) -> Summary:
         if not self.client:
-            return Summary(article_id=article.id, simple_summary="AI is offline.", key_points=[], impact_analysis="", investment_implications="", difficulty_level="N/A", reading_time_minutes=1)
-        prompt = f"""You are an expert financial analyst... (full prompt from previous version) ..."""
-        # (rest of the function is the same)
+            return Summary(article_id=article.id, simple_summary="AI processor is offline.", key_points=[], impact_analysis="", investment_implications="", difficulty_level="N/A", reading_time_minutes=1)
+        
+        prompt = f"""
+        You are an expert financial analyst who simplifies complex news for investors.
+        Summarize the following financial news article for an investor with a '{user_level}' experience level.
+
+        Article Title: "{article.title}"
+        Article Content: "{article.content}"
+
+        Your task is to return a JSON object with the following exact structure:
+        {{
+          "article_id": "{article.id}",
+          "simple_summary": "A very simple, one-paragraph explanation of the news. Write it as if explaining to a friend.",
+          "key_points": ["A list of 3-4 most important bullet points from the article."],
+          "impact_analysis": "A brief analysis of what this news could mean for the market or the specific company/asset. Explain the 'so what?'.",
+          "investment_implications": "Provide a short, balanced view on potential investment considerations. Do not give direct financial advice. Use phrases like 'Investors might consider...' or 'This could be positive/negative for...'.",
+          "difficulty_level": "Classify the topic's complexity as 'beginner', 'intermediate', or 'advanced'.",
+          "reading_time_minutes": 2
+        }}
+
+        Do not include any introductory text. Only return the valid JSON.
+        """
+        
         try:
-            chat_completion = self.client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model=self.model, temperature=0.2, max_tokens=1024, response_format={"type": "json_object"})
+            chat_completion = self.client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.model,
+                temperature=0.2,
+                max_tokens=1024,
+                response_format={"type": "json_object"}
+            )
             summary_data = json.loads(chat_completion.choices[0].message.content)
-            return Summary(article_id=article.id, **summary_data)
+            return Summary(**summary_data)
         except Exception as e:
             logger.error(f"Groq API call failed: {e}")
-            return Summary(article_id=article.id, simple_summary="AI summary could not be generated.", key_points=[], impact_analysis="", investment_implications="", difficulty_level="N/A", reading_time_minutes=1)
+            return Summary(article_id=article.id, simple_summary="AI summary could not be generated at this time.", key_points=[], impact_analysis="N/A", investment_implications="N/A", difficulty_level="N/A", reading_time_minutes=1)
 
     def generate_daily_brief(self, articles: List[NewsArticle], user_assets: List[str]) -> Dict:
         if not self.client:
-            return {"date": datetime.now().strftime("%B %d, %Y"), "market_overview": "AI is offline.", "key_themes": [], "tomorrow_watch": []}
-        # (rest of the function is the same)
-        article_titles = "\n- ".join([f'"{a.title}"' for a in articles]); assets_str = ", ".join(user_assets) if user_assets else "general market"
-        prompt = f"""You are a financial news editor... (full prompt from previous version) ..."""
+            return {"date": datetime.now().strftime("%B %d, %Y"), "market_overview": "AI processor is offline.", "key_themes": [], "tomorrow_watch": []}
+
+        article_titles = "\n- ".join([f'"{a.title}"' for a in articles])
+        assets_str = ", ".join(user_assets) if user_assets else "general market"
+        
+        prompt = f"""
+        You are a financial news editor for an app called FinanceFlow. Your task is to write a concise daily market briefing for a user interested in: {assets_str}.
+
+        Today's key news headlines are:
+        - {article_titles}
+
+        Based on these headlines, generate a JSON object with the following structure:
+        {{
+          "date": "{datetime.now().strftime("%B %d, %Y")}",
+          "market_overview": "A one-paragraph summary of the overall market sentiment today based on the headlines. Is it positive, negative, or mixed?",
+          "key_themes": ["A list of 2-3 major themes or trends observed from today's news."],
+          "tomorrow_watch": ["A list of 2-3 things investors should watch out for tomorrow, based on today's events."]
+        }}
+        
+        Do not include any introductory text. Only return the valid JSON.
+        """
         try:
-            chat_completion = self.client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model=self.model, temperature=0.2, max_tokens=1024, response_format={"type": "json_object"})
+            chat_completion = self.client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.model,
+                temperature=0.2,
+                max_tokens=1024,
+                response_format={"type": "json_object"}
+            )
             return json.loads(chat_completion.choices[0].message.content)
         except Exception as e:
-            logger.error(f"Groq API call failed for brief: {e}")
+            logger.error(f"Groq API call for daily brief failed: {e}")
             return {"date": datetime.now().strftime("%B %d, %Y"), "market_overview": "Could not generate brief.", "key_themes": [], "tomorrow_watch": []}
+
 
 # --- Flask Application Setup ---
 app = Flask(__name__)
 CORS(app)
 
 # Initialize components
-db = DatabaseManager()
+firestore_manager = FirestoreManager()
 news_fetcher = NewsAggregator()
 ai_processor = AIProcessor()
 
+# Read the frontend file into a variable once at startup
 try:
     with open('finance_news_frontend.html', 'r', encoding='utf-8') as f:
         FRONTEND_HTML = f.read()
 except FileNotFoundError:
-    logger.error("FATAL: finance_news_frontend.html not found.")
-    FRONTEND_HTML = "<h1>Error: Frontend file not found.</h1>"
+    logger.error("FATAL: finance_news_frontend.html not found. App will not serve frontend.")
+    FRONTEND_HTML = "<h1>Error: Frontend file not found. Please check deployment.</h1>"
 
 
-# --- API Routes (Updated with Caching Logic) ---
+# --- API Routes ---
 @app.route('/')
 def index():
+    """Serves the main single-page application."""
     return render_template_string(FRONTEND_HTML)
 
 @app.route('/api/news')
 def get_news():
+    """Provides summarized news, using Firestore as a cache."""
     try:
         level = request.args.get('level', 'beginner')
         articles = news_fetcher.fetch_financial_news()
         response_data = []
+        
         for article in articles:
-            # Check for cached summary first
-            summary = db.find_summary_by_article_id(article.id)
+            # Check Firestore for a cached summary first
+            summary = firestore_manager.find_summary_by_article_id(article.id)
+            
+            # If not in cache, generate a new one and save it
             if not summary:
                 logger.info(f"Cache miss for article ID {article.id}. Calling Groq API.")
                 summary = ai_processor.generate_summary(article, level)
-                db.save_summary(summary) # Save new summary to cache
-            else:
-                logger.info(f"Cache hit for article ID {article.id}. Serving from DB.")
+                firestore_manager.save_summary(summary)
             
             article_data = asdict(article)
             article_data['published_at'] = article.published_at.isoformat()
             response_data.append({'article': article_data, 'summary': asdict(summary)})
+            
         return jsonify({'status': 'success', 'data': response_data})
     except Exception as e:
         logger.error(f"Error in /api/news: {e}", exc_info=True)
@@ -189,7 +261,8 @@ def get_news():
 
 @app.route('/api/daily-brief')
 def get_daily_brief():
-    # Caching is less critical for the brief, but can be added later if needed
+    """Provides a daily market brief."""
+    # Caching for this can be added later if needed (e.g., cache one brief per day)
     try:
         assets_str = request.args.get('assets', 'tesla,bitcoin')
         user_assets = assets_str.split(',') if assets_str else []
@@ -200,11 +273,9 @@ def get_daily_brief():
         logger.error(f"Error in /api/daily-brief: {e}", exc_info=True)
         return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
 
-
-# The main entry point for Gunicorn on Render
-# Note: The if __name__ == '__main__': block is for local development only.
-# Gunicorn will not run it.
+# This block is for local development only.
+# Gunicorn, the production server on Render, will not run this.
 if __name__ == '__main__':
-    # This part is for running the app locally with `python finance_news_backend.py`
-    print("🚀 Starting FinanceFlow [LOCAL DEVELOPMENT MODE]")
+    print("🚀 Starting FinanceFlow [LOCAL DEVELOPMENT MODE WITH FIREBASE]")
+    # debug=True enables auto-reloading when you change the code.
     app.run(debug=True, host='0.0.0.0', port=5000)
